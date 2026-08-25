@@ -73,7 +73,7 @@ func (r *EventWatcher) checkOlderPending(ctx context.Context, threshold time.Tim
 		if success {
 			span := r.eventToSpan(event, remoteContext)
 			r.emitSpan(ctx, ref.object, span)
-			if !(ref.IsTopLevel() && remoteContext.HasSpanID()) { // Only store for top-level object if top-level span
+			if !ref.IsTopLevel() || !remoteContext.HasSpanID() { // Only store for top-level object if top-level span
 				r.recent.store(ref, remoteContext, span.SpanContext)
 			}
 		}

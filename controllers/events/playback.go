@@ -32,10 +32,10 @@ func (r *EventWatcher) captureObject(obj runtime.Object, style string) {
 	if r.Capture == nil {
 		return
 	}
-	fmt.Fprintln(r.Capture, "---")
+	_, _ = fmt.Fprintln(r.Capture, "---")
 	d := captureDetails{Timestamp: mtime.Now(), Style: style, Kind: obj.GetObjectKind().GroupVersionKind().Kind}
 	buf, _ := gojson.Marshal(&d)
-	fmt.Fprintln(r.Capture, "#", string(buf))
+	_, _ = fmt.Fprintln(r.Capture, "#", string(buf))
 	cf := k8sserializer.NewCodecFactory(r.scheme)
 	serializerInfo, _ := runtime.SerializerInfoForMediaType(cf.SupportedMediaTypes(), runtime.ContentTypeYAML)
 	encoder := serializerInfo.Serializer
@@ -48,7 +48,7 @@ func walkFile(ctx context.Context, filename string, callback func(captureDetails
 	if err != nil {
 		return fmt.Errorf("error opening %q: %v", filename, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	fr := json.YAMLFramer.NewFrameReader(file)
 	buf := make([]byte, 64*1024) // "should be enough for anyone"
 	for {

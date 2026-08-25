@@ -137,7 +137,7 @@ func eventToSpanID(event *corev1.Event) trace.SpanID {
 	f := fnv.New64a()
 	_, _ = f.Write([]byte(event.UID))
 	if event.Count > 0 {
-		fmt.Fprint(f, event.Count)
+		_, _ = fmt.Fprint(f, event.Count)
 	}
 	var h trace.SpanID
 	_ = f.Sum(h[:0])
@@ -149,7 +149,7 @@ func adjustEventTime(event *corev1.Event, now time.Time) {
 	if event.LastTimestamp.Time.IsZero() {
 		return
 	}
-	if event.LastTimestamp.Time.Nanosecond() == 0 && now.Sub(event.LastTimestamp.Time) < time.Second {
+	if event.LastTimestamp.Nanosecond() == 0 && now.Sub(event.LastTimestamp.Time) < time.Second {
 		event.LastTimestamp.Time = now
 	}
 }

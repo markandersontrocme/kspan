@@ -41,7 +41,7 @@ func getUpdateSource(obj v1.Object, subFields ...string) (source string, operati
 	// If it has managed fields, return the newest change that updated the spec
 	for _, mf := range obj.GetManagedFields() {
 		var fields map[string]interface{}
-		err := json.Unmarshal(mf.FieldsV1.Raw, &fields)
+		err := json.Unmarshal(mf.FieldsV1.GetRawBytes(), &fields)
 		if err != nil {
 			continue
 		}
@@ -53,7 +53,7 @@ func getUpdateSource(obj v1.Object, subFields ...string) (source string, operati
 			continue
 		}
 
-		if _, found, _ := unstructured.NestedFieldNoCopy(fields, subFields...); found && changedTime.Time.After(ts) {
+		if _, found, _ := unstructured.NestedFieldNoCopy(fields, subFields...); found && changedTime.After(ts) {
 			ts = mf.Time.Time
 			source = mf.Manager
 			operation = string(mf.Operation)
