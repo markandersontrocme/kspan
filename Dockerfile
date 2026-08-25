@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM golang:1.16.2 as builder
+FROM golang:1.25 AS builder
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -14,8 +14,12 @@ COPY main.go main.go
 COPY controllers/ controllers/
 COPY pkg/ pkg/
 
-# Build
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on go build -a -o manager main.go
+# Build. TARGETOS/TARGETARCH are supplied automatically by the builder for the
+# target platform (defaulting to the host), so the image matches the node it
+# runs on - important for `kind load docker-image` on arm64 hosts.
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GO111MODULE=on go build -a -o manager main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details

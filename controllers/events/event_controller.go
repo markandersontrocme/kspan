@@ -9,9 +9,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus"
-	tracesdk "go.opentelemetry.io/otel/sdk/export/trace"
 	"go.opentelemetry.io/otel/sdk/resource"
-	"go.opentelemetry.io/otel/semconv"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/weaveworks-experiments/kspan/pkg/mtime"
+	"github.com/markandersontrocme/kspan/pkg/mtime"
 )
 
 var (
@@ -33,7 +33,7 @@ type EventWatcher struct {
 	sync.Mutex
 	Client    client.Client
 	Log       logr.Logger
-	Exporter  tracesdk.SpanExporter
+	Exporter  sdktrace.SpanExporter
 	Capture   io.Writer
 	ticker    *time.Ticker
 	startTime time.Time
@@ -67,8 +67,7 @@ func init() {
 }
 
 // Reconcile gets called every time an Event changes
-func (r *EventWatcher) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
+func (r *EventWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("event", req.NamespacedName)
 
 	// Fetch the Event object
@@ -218,7 +217,7 @@ func (r *EventWatcher) getResource(s source) *resource.Resource {
 	res, found := r.resources[s]
 	if !found {
 		// Make a new resource and cache for later.  TODO: cache eviction
-		res = resource.NewWithAttributes(semconv.ServiceNameKey.String(s.name), semconv.ServiceInstanceIDKey.String(s.instance))
+		res = resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceNameKey.String(s.name), semconv.ServiceInstanceIDKey.String(s.instance))
 		r.resources[s] = res
 	}
 	return res

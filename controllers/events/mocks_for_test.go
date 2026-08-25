@@ -7,24 +7,50 @@ import (
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
-	tracesdk "go.opentelemetry.io/otel/sdk/export/trace"
-	"go.opentelemetry.io/otel/semconv"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	clienttesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake" //nolint:staticcheck
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
-// Initialize an EventWatcher, context and logger ready for testing
+// Initialize an EventWatcher, context and logger ready for testing, using a
+// fake span exporter that records spans in memory.
 func newTestEventWatcher(initObjs ...runtime.Object) (context.Context, *EventWatcher, *fakeExporter, logr.Logger) {
+	exporter := newFakeExporter()
+	ctx, r, log := newTestEventWatcherWithExporter(exporter, initObjs...)
+	return ctx, r, exporter, log
+}
+
+// newTestEventWatcherWithExporter builds the same test EventWatcher but sends
+// spans to the supplied exporter, so callers can wire in the real OTLP exporter
+// for wire-level e2e tests.
+func newTestEventWatcherWithExporter(exporter sdktrace.SpanExporter, initObjs ...runtime.Object) (context.Context, *EventWatcher, logr.Logger) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	log := zap.New(zap.UseDevMode(true))
 
-	fakeClient := fake.NewFakeClientWithScheme(scheme, initObjs...)
-	exporter := newFakeExporter()
+	// Use a plain ObjectTracker rather than the fake client's default field-managed
+	// tracker. The field-managed tracker recomputes managedFields on insert, which
+	// discards the manager and operation recorded in the fixtures; the controller
+	// synthesises its top-level span from exactly those values. A plain tracker
+	// stores objects verbatim, matching the behaviour these tests were written
+	// against. WithReturnManagedFields keeps managedFields on read responses, which
+	// the fake client otherwise strips by default.
+	tracker := clienttesting.NewObjectTracker(scheme, serializer.NewCodecFactory(scheme).UniversalDecoder())
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjectTracker(tracker).
+		WithReturnManagedFields().
+		WithRuntimeObjects(sanitizeForFakeClient(initObjs)...).
+		Build()
 
 	r := &EventWatcher{
 		Client:   fakeClient,
@@ -34,7 +60,26 @@ func newTestEventWatcher(initObjs ...runtime.Object) (context.Context, *EventWat
 
 	r.initialize(scheme)
 
-	return ctx, r, exporter, log
+	return ctx, r, log
+}
+
+// sanitizeForFakeClient adapts initial objects to the stricter controller-runtime
+// fake client, which refuses to seed an object that has a deletionTimestamp but no
+// finalizers. Some fixtures represent pods mid-deletion; we add a placeholder
+// finalizer on a copy so the tracker accepts them. This does not affect the
+// controller's trace output, which never inspects finalizers.
+func sanitizeForFakeClient(objs []runtime.Object) []runtime.Object {
+	out := make([]runtime.Object, 0, len(objs))
+	for _, o := range objs {
+		obj := o.DeepCopyObject()
+		if accessor, err := meta.Accessor(obj); err == nil {
+			if accessor.GetDeletionTimestamp() != nil && len(accessor.GetFinalizers()) == 0 {
+				accessor.SetFinalizers([]string{"kspan.test/placeholder"})
+			}
+		}
+		out = append(out, obj)
+	}
+	return out
 }
 
 func newFakeExporter() *fakeExporter {
@@ -43,7 +88,7 @@ func newFakeExporter() *fakeExporter {
 
 // records spans sent to it, for testing purposes
 type fakeExporter struct {
-	SpanSnapshot []*tracesdk.SpanSnapshot
+	SpanSnapshot tracetest.SpanStubs
 }
 
 func (f *fakeExporter) dump() []string {
@@ -54,7 +99,7 @@ func (f *fakeExporter) dump() []string {
 	}
 	var ret []string
 	for i, d := range f.SpanSnapshot {
-		parent, found := spanMap[d.ParentSpanID]
+		parent, found := spanMap[d.Parent.SpanID()]
 		var parentStr string
 		if found {
 			parentStr = fmt.Sprintf(" (%d)", parent)
@@ -69,8 +114,8 @@ func (f *fakeExporter) dump() []string {
 }
 
 // ExportSpans implements trace.SpanExporter
-func (f *fakeExporter) ExportSpans(ctx context.Context, SpanSnapshot []*tracesdk.SpanSnapshot) error {
-	f.SpanSnapshot = append(f.SpanSnapshot, SpanSnapshot...)
+func (f *fakeExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	f.SpanSnapshot = append(f.SpanSnapshot, tracetest.SpanStubsFromReadOnlySpans(spans)...)
 	return nil
 }
 
@@ -106,8 +151,8 @@ func (f *fakeExporter) sort() {
 	}
 	topSpan := -1
 	for i, s := range f.SpanSnapshot {
-		if s.ParentSpanID.IsValid() {
-			p := spanMap[s.ParentSpanID]
+		if s.Parent.SpanID().IsValid() {
+			p := spanMap[s.Parent.SpanID()]
 			v[p].connect(v[i])
 		} else {
 			if topSpan != -1 {
@@ -120,7 +165,7 @@ func (f *fakeExporter) sort() {
 		return
 	}
 
-	sortedSpans := make([]*tracesdk.SpanSnapshot, 0, len(f.SpanSnapshot))
+	sortedSpans := make(tracetest.SpanStubs, 0, len(f.SpanSnapshot))
 	t := dfs{
 		visit: func(v *vertex) {
 			sortedSpans = append(sortedSpans, f.SpanSnapshot[v.value])
@@ -131,8 +176,8 @@ func (f *fakeExporter) sort() {
 	f.SpanSnapshot = sortedSpans
 }
 
-// SortableSpans attaches the methods of sort.Interface to []*tracesdk.SpanSnapshot, sorting by start time.
-type SortableSpans []*tracesdk.SpanSnapshot
+// SortableSpans attaches the methods of sort.Interface to tracetest.SpanStubs, sorting by start time.
+type SortableSpans []tracetest.SpanStub
 
 func (x SortableSpans) Len() int           { return len(x) }
 func (x SortableSpans) Swap(i, j int)      { x[i], x[j] = x[j], x[i] }
